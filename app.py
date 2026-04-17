@@ -241,6 +241,7 @@ class AITextPolisher(rumps.App):
         self._build_menu()
         self._start_keyboard_listener()
         threading.Thread(target=self._init_stt, daemon=True).start()
+        threading.Thread(target=self._ensure_ollama, daemon=True).start()
 
     def _build_menu(self):
         self.menu = [
@@ -253,6 +254,27 @@ class AITextPolisher(rumps.App):
             None,
             rumps.MenuItem("終了", callback=rumps.quit_application),
         ]
+
+    def _ensure_ollama(self):
+        """Ollamaが起動していなければ自動起動する"""
+        if self.ollama.check_connection():
+            return
+        try:
+            subprocess.Popen(
+                ['ollama', 'serve'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            # 起動待ち（最大10秒）
+            for _ in range(10):
+                time.sleep(1)
+                if self.ollama.check_connection():
+                    print("[Ollama] 自動起動完了")
+                    return
+            print("[Ollama] 起動タイムアウト")
+        except FileNotFoundError:
+            rumps.notification("AI Text Polisher", "Ollama未インストール",
+                               "https://ollama.com からインストールしてください")
 
     def _init_stt(self):
         self.stt = AppleSTT()
