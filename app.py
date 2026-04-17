@@ -19,8 +19,19 @@ import AppKit
 
 # --- 設定 ---
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "gemma3:4b"
 SAMPLE_RATE = 16000
+
+# config.json から設定を読み込む
+_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+try:
+    with open(_CONFIG_PATH) as _f:
+        _cfg = json.load(_f)
+except Exception:
+    _cfg = {}
+
+OLLAMA_MODEL   = _cfg.get("model", "gemma3:4b")
+KEEP_ALIVE     = _cfg.get("keep_alive", 300)      # 秒 (0=即解放, -1=永続)
+OLLAMA_TIMEOUT = _cfg.get("ollama_timeout", 30)
 ICON_IDLE       = "✨"
 ICON_RECORDING  = "🎙️"
 ICON_PROCESSING = "⏳"
@@ -195,7 +206,7 @@ class OllamaClient:
             "model": OLLAMA_MODEL,
             "prompt": prompt,
             "stream": False,
-            "keep_alive": -1,
+            "keep_alive": KEEP_ALIVE,
             "options": {"temperature": 0.1},
         }).encode("utf-8")
 
@@ -205,7 +216,7 @@ class OllamaClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 response = result.get("response", "").strip()
                 # 重複出力を除去
@@ -245,7 +256,7 @@ class AITextPolisher(rumps.App):
 
     def _build_menu(self):
         self.menu = [
-            rumps.MenuItem("AI Text Polisher", callback=None),
+            rumps.MenuItem(f"AI Text Polisher  ({OLLAMA_MODEL})", callback=None),
             None,
             rumps.MenuItem("クリップボードを整形", callback=self._on_polish_clipboard),
             None,

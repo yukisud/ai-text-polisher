@@ -1,0 +1,5 @@
+{
+  "model": "gemma3:4b",
+  "keep_alive": 300,
+  "ollama_timeout": 30
+}

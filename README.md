@@ -9,6 +9,7 @@ macOS向けの音声入力＋AIテキスト整形アプリ。[Typless](https://t
 - macOS 13以降（Apple Silicon / M1推奨）
 - Python 3.11以降
 - [Ollama](https://ollama.com) インストール済み
+- RAM: 8GB以上推奨（4GBでも `gemma3:1b` で動作可能）
 
 ## セットアップ
 
@@ -21,11 +22,12 @@ brew install python@3.11
 ### 2. Ollamaのインストールとモデル取得
 
 ```bash
-# Ollamaをインストール（https://ollama.com からDLも可）
+# Ollamaをインストール
 brew install ollama
 
-# LLMモデルをダウンロード
-ollama pull gemma3:4b
+# LLMモデルをダウンロード（スペックに応じて選択）
+ollama pull gemma3:4b   # 標準（RAM 8GB以上推奨）
+ollama pull gemma3:1b   # 軽量版（RAM 4GB / 低スペック機向け）
 ```
 
 ### 3. このリポジトリをクローン
@@ -57,17 +59,28 @@ bash setup.sh
 
 Terminal（またはPython）を許可リストに追加してください。
 
-### 6. 起動
+### 6. 起動（通常）
 
 ```bash
-# 別ターミナルでOllamaを起動しておく
-ollama serve
-
-# アプリを起動
 python3.11 app.py
 ```
 
+Ollamaが起動していない場合は自動で起動します。  
 メニューバーに **✨** アイコンが表示されれば起動成功です。
+
+### 7. ログイン時に自動起動する（推奨）
+
+```bash
+bash install_autostart.sh
+```
+
+以降はログインするだけでメニューバーに自動表示されます。ターミナルは不要です。
+
+解除する場合：
+
+```bash
+bash uninstall_autostart.sh
+```
 
 ## 使い方
 
@@ -86,6 +99,31 @@ python3.11 app.py
 - 英語の固有名詞・専門用語はそのまま英語で保持
 - 自然なビジネス敬語（です・ます調）
 
+## 設定のカスタマイズ（config.json）
+
+`config.json` を編集することでモデルや動作を変更できます：
+
+```json
+{
+  "model": "gemma3:4b",
+  "keep_alive": 300,
+  "ollama_timeout": 30
+}
+```
+
+| キー | 説明 | 推奨値 |
+|------|------|--------|
+| `model` | 使用するOllamaモデル | `gemma3:1b`（軽量）/ `gemma3:4b`（標準） |
+| `keep_alive` | モデルをRAMに保持する秒数 | `300`（5分）/ `0`（即解放）/ `-1`（永続） |
+| `ollama_timeout` | API タイムアウト秒数 | `30` |
+
+### スペック別おすすめ設定
+
+| 環境 | model | keep_alive |
+|------|-------|------------|
+| M1 / 8GB以上 | `gemma3:4b` | `300` |
+| 4GB / 低スペック | `gemma3:1b` | `0` |
+
 ## 技術スタック
 
 | レイヤー | 技術 |
@@ -94,8 +132,9 @@ python3.11 app.py
 | グローバルショートカット | NSEvent（PyObjC）|
 | 音声録音 | sounddevice + numpy |
 | STT | macOS SFSpeechRecognizer（Siri/Dictationエンジン）|
-| LLM整形 | Ollama REST API（gemma3:4b）|
+| LLM整形 | Ollama REST API |
 | クリップボード | pyperclip |
+| 自動起動 | launchd（LaunchAgent）|
 
 ## ライセンス
 
