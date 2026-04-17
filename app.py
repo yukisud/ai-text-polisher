@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI Text Polisher - Typless-like voice input + AI text formatting app for macOS
+AI Text Polisher - Voice input + AI text formatting app for macOS
 """
 
 import rumps
@@ -15,45 +15,39 @@ import sounddevice as sd
 import pyperclip
 import urllib.request
 import urllib.error
-
-from pynput import keyboard
+import AppKit
 
 # --- 設定 ---
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "gemma3:4b"
-WHISPER_MODEL = "base"
 SAMPLE_RATE = 16000
-HOTKEY = {keyboard.Key.cmd, keyboard.KeyCode(char='k'), keyboard.Key.shift}
+ICON_IDLE       = "✨"
+ICON_RECORDING  = "🎙️"
+ICON_PROCESSING = "⏳"
 
-# --- プロンプト定義 ---
-PROMPTS = {
-    "Standard": """あなたは最高峰のリアルタイム・エディターです。
-以下の【厳格なルール】に従って、入力された崩れた文章を完璧に整形してください。
+# NSEvent masks / modifier flags
+_NSEventMaskKeyDown  = 1 << 10
+_NSEventMaskKeyUp    = 1 << 11
+_NSCommandKeyMask    = 1 << 20
+_NSAlternateKeyMask  = 1 << 19  # Option/Alt key
 
-【厳格なルール】
-1. フィラー除去: 「えー、あの、その、えっと、あー」等の意味を持たない言葉はすべて削除。
-2. 訂正の優先: 「A、いやB、やっぱりC」という言い直しがある場合、最後の「C」のみを真実として採用し、AとBは完全に無視すること。
-3. 重複の統合: 同じ内容の繰り返し（例：「資料の、資料の件で」）は1つにまとめる。
-4. 自然な敬語: 相手に失礼のない、かつ簡潔なビジネス敬語（です・ます調）で構成。
-5. 出力制限: 解説、挨拶、補足説明（「以下は整形後です」等）は一切禁止。整形後の本文のみを出力すること。""",
+# --- プロンプト ---
+POLISH_PROMPT = """あなたは音声認識テキストの整形専門家です。
+以下のルールで整形してください。
 
-    "Summarize": """あなたは議事録の要約専門家です。
-入力された文章から「最終的な決定事項・結論のみ」を抽出してください。
+1. フィラー除去：「えー」「あの」「その」「えっと」「まあ」「なんか」「あー」「うーん」等を削除
+2. 言い直し統合：「AいやB」「AやっぱりB」→ 最後のBのみ採用
+3. 重複除去：繰り返しを1つにまとめる
+4. 番号付きリスト（1. 2. 3.）はその構造を維持しつつ各項目を自然な文に整形する
+5. 英語保持：英語の固有名詞・専門用語・ブランド名はそのまま英語で表記
+6. ビジネス敬語（です・ます調）
+7. 情報の省略禁止：元の発話に含まれる全内容を保持する
+8. 整形後テキストのみ出力（解説・補足・前置き禁止）"""
 
-【厳格なルール】
-1. 言い直しや検討過程（「17日→18日→19日」）は最後の結論（「19日」）のみを残す。
-2. フィラーや繰り返しはすべて除去。
-3. 簡潔な体言止めまたはです・ます調で出力。
-4. 出力は整形後の本文のみ。解説・補足は一切禁止。""",
-
-    "Bullet": """入力された文章を、簡潔な日本語の箇条書きリストに変換してください。
-各項目は「・」で始め、重複や言い直しは除去すること。
-出力は箇条書きのみ。解説・補足は一切禁止。""",
-
-    "Email": """入力された内容を、ビジネスメールの本文として整形してください。
-適切な敬語を使用し、冒頭の挨拶（「お世話になっております。」）と末尾の締め（「よろしくお願いいたします。」）を付けること。
-フィラー・言い直しは除去。出力はメール本文のみ。""",
-}
+RESPONSE_PROMPT = """あなたはテキスト処理の専門家です。
+「選択テキスト」に対して「音声指示」に従って処理し、結果のみ出力してください。
+指示に応じて翻訳・要約・言い換え・フォーマット変更などを行います。
+処理結果のテキストのみ出力。解説・補足・前置きは一切禁止。"""
 
 
 class AudioRecorder:
@@ -84,53 +78,98 @@ class AudioRecorder:
         if hasattr(self, 'stream'):
             self.stream.stop()
             self.stream.close()
-
         if not self.frames:
             return None
-
-        audio = np.concatenate(self.frames, axis=0).flatten()
-        return audio
+        return np.concatenate(self.frames, axis=0).flatten()
 
     def save_wav(self, audio):
-        """音声データをWAVファイルとして保存"""
         import wave
-        import struct
-
         tmp = tempfile.NamedTemporaryFile(suffix='.wav', delete=False)
         with wave.open(tmp.name, 'w') as wf:
             wf.setnchannels(1)
-            wf.setsampwidth(2)  # 16-bit
+            wf.setsampwidth(2)
             wf.setframerate(SAMPLE_RATE)
-            audio_int16 = (audio * 32767).astype(np.int16)
-            wf.writeframes(audio_int16.tobytes())
+            wf.writeframes((audio * 32767).astype(np.int16).tobytes())
         return tmp.name
 
 
-class WhisperSTT:
-    """whisper.cpp を使ったSTTクラス"""
+class AppleSTT:
+    """macOS SFSpeechRecognizer (Siri/Dictation エンジン) を使ったSTTクラス"""
 
     def __init__(self):
-        self.model = None
-        self._load_model()
+        self.available = False
+        self.recognizer = None
+        self._setup()
 
-    def _load_model(self):
+    def _setup(self):
         try:
-            from pywhispercpp.model import Model
-            self.model = Model(WHISPER_MODEL, print_realtime=False, print_progress=False)
+            from Speech import SFSpeechRecognizer
+            import Foundation
+
+            auth_done = threading.Event()
+            auth_result = [None]
+
+            def auth_handler(status):
+                auth_result[0] = status
+                auth_done.set()
+
+            SFSpeechRecognizer.requestAuthorization_(auth_handler)
+            auth_done.wait(timeout=10)
+
+            if auth_result[0] == 3:  # Authorized
+                locale = Foundation.NSLocale.alloc().initWithLocaleIdentifier_("ja-JP")
+                self.recognizer = SFSpeechRecognizer.alloc().initWithLocale_(locale)
+                self.available = bool(self.recognizer and self.recognizer.isAvailable())
+                print(f"[AppleSTT] 初期化完了 available={self.available}")
+            else:
+                print(f"[AppleSTT] 認証未許可 status={auth_result[0]}")
         except Exception as e:
-            print(f"Whisper モデルのロードに失敗: {e}")
-            self.model = None
+            print(f"[AppleSTT] 初期化エラー: {e}")
 
     def transcribe(self, wav_path):
-        if self.model is None:
+        if not self.available:
             return None
         try:
-            segments = self.model.transcribe(wav_path)
-            text = "".join([s.text for s in segments]).strip()
+            from Speech import SFSpeechURLRecognitionRequest
+            import Foundation
+
+            result = [None]
+            done = threading.Event()
+
+            url = Foundation.NSURL.fileURLWithPath_(wav_path)
+            request = SFSpeechURLRecognitionRequest.alloc().initWithURL_(url)
+            request.setShouldReportPartialResults_(False)
+
+            def handler(recognition_result, error):
+                if error:
+                    print(f"[AppleSTT] 認識エラー: {error}")
+                if recognition_result:
+                    result[0] = recognition_result.bestTranscription().formattedString()
+                if error or (recognition_result and recognition_result.isFinal()):
+                    done.set()
+
+            self.recognizer.recognitionTaskWithRequest_resultHandler_(request, handler)
+            done.wait(timeout=30)
+
+            text = result[0]
+            print(f"[STT結果] {text}")
             return text if text else None
         except Exception as e:
-            print(f"STT エラー: {e}")
+            print(f"[AppleSTT] STTエラー: {e}")
             return None
+
+
+def _preformat_numbered_list(text):
+    """「1つ目〜2点目〜3軒目」等のパターンをOllama送信前に番号リスト形式に変換
+    STTの誤認識（つ目→軒目/点目/件目 等）も含めて対応"""
+    import re
+    # 「つ個番点軒件本枚個」などSTTが誤認識しやすい助数詞を全てカバー
+    result = re.sub(
+        r'(?:まず\s*)?([1-9１-９])[つ個番点軒件本枚ケヶ]目(?:[がはにでは、：: ]*)',
+        lambda m: f'\n{int(m.group(1))}. ',
+        text
+    )
+    return result.strip()
 
 
 class OllamaClient:
@@ -145,12 +184,19 @@ class OllamaClient:
             return False
 
     def generate(self, system_prompt, user_text):
+        prompt = f"""{system_prompt}
+
+【入力テキスト】
+{user_text}
+
+【出力】
+"""
         payload = json.dumps({
             "model": OLLAMA_MODEL,
-            "prompt": user_text,
-            "system": system_prompt,
+            "prompt": prompt,
             "stream": False,
             "keep_alive": -1,
+            "options": {"temperature": 0.1},
         }).encode("utf-8")
 
         req = urllib.request.Request(
@@ -161,7 +207,17 @@ class OllamaClient:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
-                return result.get("response", "").strip()
+                response = result.get("response", "").strip()
+                # 重複出力を除去
+                paragraphs = [p.strip() for p in response.split('\n') if p.strip()]
+                if len(paragraphs) >= 2 and paragraphs[0] == paragraphs[-1]:
+                    response = paragraphs[0]
+                elif len(response) > 20:
+                    half = len(response) // 2
+                    if response[:half].strip() == response[half:].strip():
+                        response = response[:half].strip()
+                print(f"[Ollama結果] {response}")
+                return response
         except urllib.error.URLError:
             return None
         except Exception as e:
@@ -173,207 +229,192 @@ class AITextPolisher(rumps.App):
     """メインアプリケーション"""
 
     def __init__(self):
-        super().__init__(
-            "✏️",
-            quit_button=None,
-        )
+        super().__init__(ICON_IDLE, quit_button=None)
 
-        self.current_mode = "Standard"
         self.recorder = AudioRecorder()
-        self.stt = None  # 遅延初期化
+        self.stt = None
         self.ollama = OllamaClient()
         self.is_processing = False
         self.hotkey_pressed = False
-        self._pressed_keys = set()
+        self._context_text = None  # 選択テキスト（音声指示モード用）
 
         self._build_menu()
         self._start_keyboard_listener()
-
-        # Whisperモデルをバックグラウンドでロード
-        threading.Thread(target=self._init_whisper, daemon=True).start()
+        threading.Thread(target=self._init_stt, daemon=True).start()
 
     def _build_menu(self):
-        # モード選択
-        mode_items = []
-        for mode in PROMPTS.keys():
-            item = rumps.MenuItem(mode, callback=self._on_mode_change)
-            if mode == self.current_mode:
-                item.state = 1
-            mode_items.append(item)
-
         self.menu = [
             rumps.MenuItem("AI Text Polisher", callback=None),
-            None,  # セパレーター
-            rumps.MenuItem("モード", callback=None),
-            *mode_items,
             None,
-            rumps.MenuItem("テキスト整形（クリップボード）", callback=self._on_polish_clipboard),
+            rumps.MenuItem("クリップボードを整形", callback=self._on_polish_clipboard),
             None,
-            rumps.MenuItem("ショートカット: ⌘⇧K (長押し=音声)", callback=None),
+            rumps.MenuItem("⌘⌥K 短押し: 整形  長押し: 音声入力", callback=None),
+            rumps.MenuItem("テキスト選択 + 長押し: 選択テキストへの指示", callback=None),
             None,
             rumps.MenuItem("終了", callback=rumps.quit_application),
         ]
 
-    def _init_whisper(self):
-        """バックグラウンドでWhisperをロード"""
-        self.stt = WhisperSTT()
-        if self.stt.model:
+    def _init_stt(self):
+        self.stt = AppleSTT()
+        if self.stt.available:
             rumps.notification("AI Text Polisher", "準備完了", "音声入力が使用できます")
         else:
-            rumps.notification("AI Text Polisher", "注意", "Whisperのロードに失敗。テキスト整形モードのみ使用できます")
+            rumps.notification("AI Text Polisher", "注意", "音声認識を初期化できませんでした")
 
-    def _on_mode_change(self, sender):
-        for item in self.menu.values():
-            if hasattr(item, 'state'):
-                item.state = 0
-        sender.state = 1
-        self.current_mode = sender.title
-        rumps.notification("AI Text Polisher", f"モード変更", f"{self.current_mode} に切り替えました")
+    def _capture_selected_text(self):
+        """現在選択中のテキストをCmd+Cで取得"""
+        try:
+            old_clip = pyperclip.paste()
+            subprocess.run(
+                ['osascript', '-e',
+                 'tell application "System Events" to keystroke "c" using command down'],
+                check=False, timeout=1
+            )
+            time.sleep(0.08)
+            new_clip = pyperclip.paste()
+            if new_clip and new_clip != old_clip:
+                pyperclip.copy(old_clip)  # 元のクリップボードを復元
+                return new_clip.strip()
+        except Exception:
+            pass
+        return None
 
     def _start_keyboard_listener(self):
-        """グローバルショートカットリスナーを開始"""
         self._press_time = None
 
-        def on_press(key):
-            self._pressed_keys.add(key)
-            if self._is_hotkey() and not self.hotkey_pressed and not self.is_processing:
-                self.hotkey_pressed = True
-                self._press_time = time.time()
-                # 長押し判定用タイマー
-                threading.Timer(0.5, self._on_long_press_check).start()
+        def on_key_down(event):
+            try:
+                flags = event.modifierFlags()
+                has_cmd = bool(flags & _NSCommandKeyMask)
+                has_opt = bool(flags & _NSAlternateKeyMask)
+                chars = event.charactersIgnoringModifiers() or ''
+                has_k = chars.lower() == 'k'
+                if has_cmd and has_opt and has_k and not self.hotkey_pressed and not self.is_processing:
+                    self._context_text = self._capture_selected_text()
+                    self.hotkey_pressed = True
+                    self._press_time = time.time()
+                    threading.Timer(0.5, self._on_long_press_check).start()
+            except Exception:
+                pass
 
-        def on_release(key):
-            if key in self._pressed_keys:
-                self._pressed_keys.discard(key)
+        def on_key_up(event):
+            try:
+                if not self.hotkey_pressed:
+                    return
+                chars = event.charactersIgnoringModifiers() or ''
+                if chars.lower() == 'k':
+                    self.hotkey_pressed = False
+                    hold_time = time.time() - (self._press_time or time.time())
+                    if hold_time >= 0.5:
+                        self._on_voice_stop()
+                    else:
+                        threading.Thread(target=self._on_polish_clipboard, daemon=True).start()
+            except Exception:
+                pass
 
-            if self.hotkey_pressed:
-                self.hotkey_pressed = False
-                hold_time = time.time() - (self._press_time or time.time())
-                if hold_time >= 0.5:
-                    # 長押し → 録音停止してSTT処理
-                    self._on_voice_stop()
-                else:
-                    # 短押し → テキスト整形
-                    threading.Thread(target=self._on_polish_clipboard, daemon=True).start()
-
-        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        self._listener.start()
-
-    def _is_hotkey(self):
-        """Cmd + Shift + K が押されているか判定"""
-        has_cmd = keyboard.Key.cmd in self._pressed_keys or keyboard.Key.cmd_l in self._pressed_keys or keyboard.Key.cmd_r in self._pressed_keys
-        has_shift = keyboard.Key.shift in self._pressed_keys or keyboard.Key.shift_l in self._pressed_keys or keyboard.Key.shift_r in self._pressed_keys
-        has_k = any(
-            getattr(k, 'char', None) == 'k'
-            for k in self._pressed_keys
+        self._key_down_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            _NSEventMaskKeyDown, on_key_down
         )
-        return has_cmd and has_shift and has_k
+        self._key_up_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            _NSEventMaskKeyUp, on_key_up
+        )
 
     def _on_long_press_check(self):
-        """長押し判定後に録音開始"""
         if self.hotkey_pressed and not self.is_processing:
-            self.title = "🎙️"
+            self.title = ICON_RECORDING
             self.recorder.start()
 
     def _on_voice_stop(self):
-        """録音停止 → STT → Ollama整形"""
         audio = self.recorder.stop()
         if audio is None or len(audio) < SAMPLE_RATE * 0.3:
-            self.title = "✏️"
+            self.title = ICON_IDLE
             return
-
-        threading.Thread(
-            target=self._process_voice,
-            args=(audio,),
-            daemon=True
-        ).start()
+        threading.Thread(target=self._process_voice, args=(audio,), daemon=True).start()
 
     def _process_voice(self, audio):
         self.is_processing = True
-        self.title = "⏳"
-
+        self.title = ICON_PROCESSING
         wav_path = None
         try:
-            # WAV保存
             wav_path = self.recorder.save_wav(audio)
 
-            # STT
-            if self.stt is None or self.stt.model is None:
-                rumps.notification("AI Text Polisher", "エラー", "Whisperが利用できません")
+            if self.stt is None or not self.stt.available:
+                rumps.notification("AI Text Polisher", "エラー", "音声認識が利用できません")
                 return
 
-            text = self.stt.transcribe(wav_path)
-            if not text:
+            voice_text = self.stt.transcribe(wav_path)
+            if not voice_text:
                 rumps.notification("AI Text Polisher", "エラー", "音声を認識できませんでした")
                 return
 
-            # Ollama整形
-            self._polish_text(text)
-
+            if self._context_text:
+                # 選択テキストへの指示モード
+                self._respond_to_selection(self._context_text, voice_text)
+            else:
+                # 通常整形モード
+                self._polish_text(voice_text)
         finally:
             if wav_path and os.path.exists(wav_path):
                 os.unlink(wav_path)
+            self._context_text = None
             self.is_processing = False
-            self.title = "✏️"
+            self.title = ICON_IDLE
 
     def _on_polish_clipboard(self, sender=None):
-        """クリップボードのテキストを整形"""
         if self.is_processing:
             return
-
         text = pyperclip.paste()
         if not text or not text.strip():
             rumps.notification("AI Text Polisher", "エラー", "クリップボードにテキストがありません")
             return
-
-        threading.Thread(
-            target=self._polish_and_paste,
-            args=(text,),
-            daemon=True
-        ).start()
+        threading.Thread(target=self._polish_and_paste, args=(text,), daemon=True).start()
 
     def _polish_and_paste(self, text):
         self.is_processing = True
-        self.title = "⏳"
+        self.title = ICON_PROCESSING
         try:
             self._polish_text(text)
         finally:
             self.is_processing = False
-            self.title = "✏️"
+            self.title = ICON_IDLE
 
     def _polish_text(self, text):
-        """Ollamaでテキスト整形 → クリップボードに書き戻す"""
         if not self.ollama.check_connection():
-            rumps.notification(
-                "AI Text Polisher", "Ollama未起動",
-                "ターミナルで `ollama serve` を実行してください"
-            )
+            rumps.notification("AI Text Polisher", "Ollama未起動",
+                               "ターミナルで `ollama serve` を実行してください")
             return
-
-        system_prompt = PROMPTS[self.current_mode]
-        result = self.ollama.generate(system_prompt, text)
-
+        text = _preformat_numbered_list(text)
+        result = self.ollama.generate(POLISH_PROMPT, text)
         if result is None:
             rumps.notification("AI Text Polisher", "エラー", "整形に失敗しました")
             return
+        self._output(result, label="整形完了")
 
-        # クリップボードに書き込み
-        pyperclip.copy(result)
+    def _respond_to_selection(self, selected_text, voice_instruction):
+        if not self.ollama.check_connection():
+            rumps.notification("AI Text Polisher", "Ollama未起動",
+                               "ターミナルで `ollama serve` を実行してください")
+            return
+        combined = f"選択テキスト：\n{selected_text}\n\n音声指示：{voice_instruction}"
+        result = self.ollama.generate(RESPONSE_PROMPT, combined)
+        if result is None:
+            rumps.notification("AI Text Polisher", "エラー", "処理に失敗しました")
+            return
+        self._output(result, label="指示実行完了")
 
-        # 自動ペースト（Cmd+V）
+    def _output(self, text, label="完了"):
+        pyperclip.copy(text)
         try:
-            from pynput.keyboard import Controller, Key
-            ctrl = Controller()
             time.sleep(0.1)
-            with ctrl.pressed(Key.cmd):
-                ctrl.press('v')
-                ctrl.release('v')
+            subprocess.run(
+                ['osascript', '-e',
+                 'tell application "System Events" to keystroke "v" using command down'],
+                check=False
+            )
         except Exception:
             pass
-
-        # 通知（プレビュー）
-        preview = result[:60] + "..." if len(result) > 60 else result
-        rumps.notification("AI Text Polisher ✓", f"[{self.current_mode}]", preview)
+        preview = text[:60] + "..." if len(text) > 60 else text
+        rumps.notification(f"✨ {label}", "", preview)
 
 
 def main():
