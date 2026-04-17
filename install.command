@@ -2,7 +2,8 @@
 # AI Text Polisher インストーラー
 # このファイルをダブルクリックするだけでインストールできます
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
 clear
 echo "╔══════════════════════════════════════╗"
