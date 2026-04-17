@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.app
+
+# Whisper モデルキャッシュ
+*.bin
+*.pt
+*.gguf
+
+# IDE
+.vscode/
+.idea/
+
+# 一時ファイル
+*.wav
+*.tmp
