@@ -13,74 +13,52 @@ macOS向けの音声入力＋AIテキスト整形アプリ。[Typless](https://t
 
 ## セットアップ
 
-### 1. Python 3.11のインストール
+### かんたんインストール（推奨）
+
+ターミナルの知識不要。ダブルクリックするだけで全て自動セットアップされます。
+
+1. [ZIPをダウンロード](https://github.com/yukisud/ai-text-polisher/archive/refs/heads/main.zip) して解凍
+2. フォルダ内の **`install.command`** をダブルクリック
+   - 初回は「開発元を確認できません」と表示される場合があります  
+     → 右クリック →「開く」→「開く」をクリック
+3. ターミナルが開き、自動でインストールが始まります（数分かかります）
+4. 完了後に表示される権限設定（アクセシビリティ・マイク）を行う
+
+次回ログインから **✨** がメニューバーに自動表示されます。
+
+---
+
+### 手動インストール（開発者向け）
+
+<details>
+<summary>展開する</summary>
 
 ```bash
+# 1. Python 3.11
 brew install python@3.11
-```
 
-### 2. Ollamaのインストールとモデル取得
-
-```bash
-# Ollamaをインストール
+# 2. Ollama + モデル取得
 brew install ollama
+ollama pull gemma3:4b   # 標準（RAM 8GB以上）
+# ollama pull gemma3:1b # 軽量版（RAM 4GB / 低スペック機）
 
-# LLMモデルをダウンロード（スペックに応じて選択）
-ollama pull gemma3:4b   # 標準（RAM 8GB以上推奨）
-ollama pull gemma3:1b   # 軽量版（RAM 4GB / 低スペック機向け）
-```
-
-### 3. このリポジトリをクローン
-
-```bash
+# 3. クローン & パッケージインストール
 git clone https://github.com/yukisud/ai-text-polisher.git
 cd ai-text-polisher
-```
-
-### 4. Pythonパッケージをインストール
-
-```bash
 pip3.11 install -r requirements.txt
-```
 
-または付属のセットアップスクリプトを使用：
-
-```bash
-bash setup.sh
-```
-
-### 5. macOS権限を付与
-
-| 権限 | 設定場所 | 用途 |
-|------|---------|------|
-| アクセシビリティ | システム設定 → プライバシーとセキュリティ → アクセシビリティ | グローバルショートカット検知・自動ペースト |
-| マイク | システム設定 → プライバシーとセキュリティ → マイク | 音声入力 |
-| 音声認識 | 初回起動時にダイアログが表示される | STT |
-
-Terminal（またはPython）を許可リストに追加してください。
-
-### 6. 起動（通常）
-
-```bash
-python3.11 app.py
-```
-
-Ollamaが起動していない場合は自動で起動します。  
-メニューバーに **✨** アイコンが表示されれば起動成功です。
-
-### 7. ログイン時に自動起動する（推奨）
-
-```bash
+# 4. 自動起動設定
 bash install_autostart.sh
 ```
 
-以降はログインするだけでメニューバーに自動表示されます。ターミナルは不要です。
+必要な権限：
 
-解除する場合：
+| 権限 | 設定場所 |
+|------|---------|
+| アクセシビリティ | システム設定 → プライバシーとセキュリティ → アクセシビリティ |
+| マイク | システム設定 → プライバシーとセキュリティ → マイク |
 
-```bash
-bash uninstall_autostart.sh
-```
+</details>
 
 ## 使い方
 
